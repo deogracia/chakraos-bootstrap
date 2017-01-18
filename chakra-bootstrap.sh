@@ -1,18 +1,18 @@
 #!/bin/bash
 #
-# arch-bootstrap: Bootstrap a base Arch Linux system using any GNU distribution.
+# chakra-bootstrap: Bootstrap a base Chakra system using any GNU distribution.
 #
 # Dependencies: bash >= 4, coreutils, wget, sed, gawk, tar, gzip, chroot, xz.
-# Project: https://github.com/tokland/arch-bootstrap
+# Project: https://github.com/deogracia/chakraos-bootstrap
 #
 # Install:
 #
-#   # install -m 755 arch-bootstrap.sh /usr/local/bin/arch-bootstrap
+#   # install -m 755 chakra-bootstrap.sh /usr/local/bin/chakra-bootstrap
 #
 # Usage:
 #
-#   # arch-bootstrap destination
-#   # arch-bootstrap -a x86_64 -r ftp://ftp.archlinux.org destination-64
+#   # chakra-bootstrap destination
+#   # chakra-bootstrap -a x86_64 -r ftp://ftp.archlinux.org destination-64
 #
 # And then you can chroot to the destination directory (user: root, password: root):
 #
