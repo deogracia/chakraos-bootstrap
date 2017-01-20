@@ -21,15 +21,17 @@
 set -e -u -o pipefail
 
 # Packages needed by pacman (see get-pacman-dependencies.sh)
-PACMAN_PACKAGES=(
-  acl chakra-signatures attr bzip2 curl expat glibc gpgme libarchive
-  libassuan libgpg-error libssh2 lzo2 openssl pacman pacman-mirrorlist xz zlib
-  krb5 e2fsprogs keyutils libidn gcc-libs
+CORE_PACKAGES=(
+  acl attr bash bzip2 chakra-signatures coreutils curl e2fsprogs expat file filesystem gcc-libs 
+  glibc gawk gpgme gpm grep icu krb5 keyutils libarchive libassuan libcap libgpg-error libidn libssh2 
+  linux-api-headers lz4 lzo2 ncurses nettle openssl pacman pacman-mirrorlist readline 
+  sed systemd tar tzdata xz zlib
 )
-BASIC_PACKAGES=(${PACMAN_PACKAGES[*]} filesystem)
-EXTRA_PACKAGES=(coreutils bash grep gawk file tar systemd sed)
-DEFAULT_REPO_URL="http://rsync.chakraos.org/"
-DEFAULT_ARM_REPO_URL="http://mirror.archlinuxarm.org"
+BASIC_PACKAGES=( 
+  vim
+)
+
+DEFAULT_REPO_URL="https://rsync.chakralinux.org/packages"
 
 stderr() { 
   echo "$@" >&2 
@@ -45,6 +47,7 @@ extract_href() {
 
 fetch() {
   curl -s "$@"
+  debug curl -s "$@"
 }
 
 uncompress() {
@@ -60,37 +63,32 @@ uncompress() {
 
 ###
 get_default_repo() {
-  local ARCH=$1
-  if [[ "$ARCH" == arm* ]]; then
-    echo $DEFAULT_ARM_REPO_URL
-  else
-    echo $DEFAULT_REPO_URL
-  fi
-}
-
-get_core_repo_url() {
-  local REPO_URL=$1 ARCH=$2
-  if [[ "$ARCH" == arm* ]]; then
-    echo "${REPO_URL%/}/$ARCH/core"
-  else
-    echo "${REPO_URL%/}/core/os/$ARCH"
-  fi
+  echo $DEFAULT_REPO_URL
 }
 
 get_template_repo_url() {
+  # param
+  # $1: repo's URL ( https://rsync.chakralinux.org/packages/ )
+  # $2: group ( core|desktop|gtk|lib32)
+  # $3: arch
+  local REPO_URL=$1 GROUP=$2 ARCH=$3
+  debug  "get_template_repo_url: ${REPO_URL}/${GROUP}/${ARCH}"
+  echo "${REPO_URL}/${GROUP}/${ARCH}"
+}
+
+get_core_repo_url() {
+  # param
+  # $1: repo's URL ( https://rsync.chakralinux.org/packages/ )
+  # $2: arch
   local REPO_URL=$1 ARCH=$2
-  if [[ "$ARCH" == arm* ]]; then
-    echo "${REPO_URL%/}/$ARCH"
-  else
-    echo "${REPO_URL%/}/\$repo/os/$ARCH"
-  fi
+  get_template_repo_url ${REPO_URL} "core" ${ARCH}
 }
 
 configure_pacman() {
   local DEST=$1 ARCH=$2
   debug "configure DNS and pacman"
-  cp "/etc/resolv.conf" "$DEST/etc/resolv.conf"
-  SERVER=$(get_template_repo_url "$REPO_URL" "$ARCH")
+  sudo cp "/etc/resolv.conf" "$DEST/etc/resolv.conf"
+  SERVER=$(get_template_repo_url "$REPO_URL" '$repo'  "$ARCH")
   echo "Server = $SERVER" >> "$DEST/etc/pacman.d/mirrorlist"
 }
 
@@ -103,21 +101,45 @@ configure_minimal_system() {
   touch "$DEST/etc/group"
   echo "bootstrap" > "$DEST/etc/hostname"
   
-  test -e "$DEST/etc/mtab" || echo "rootfs / rootfs rw 0 0" > "$DEST/etc/mtab"
-  test -e "$DEST/dev/null" || mknod "$DEST/dev/null" c 1 3
-  test -e "$DEST/dev/random" || mknod -m 0644 "$DEST/dev/random" c 1 8
-  test -e "$DEST/dev/urandom" || mknod -m 0644 "$DEST/dev/urandom" c 1 9
+  test -e "$DEST/etc/mtab"    || echo "rootfs / rootfs rw 0 0" > "$DEST/etc/mtab"
+  test -e "$DEST/dev/null"    || sudo mknod "$DEST/dev/null" c 1 3
+  test -e "$DEST/dev/random"  || sudo mknod -m 0644 "$DEST/dev/random" c 1 8
+  test -e "$DEST/dev/urandom" || sudo mknod -m 0644 "$DEST/dev/urandom" c 1 9
   
   sed -i "s/^[[:space:]]*\(CheckSpace\)/# \1/" "$DEST/etc/pacman.conf"
   sed -i "s/^[[:space:]]*SigLevel[[:space:]]*=.*$/SigLevel = Never/" "$DEST/etc/pacman.conf"
 }
 
-fetch_packages_list() {
-  local REPO=$1 
+fetch_repo_file_list() {
+  # param
+  # $1 : repo's URL ( https://rsync.chakralinux.org/packages/desktop/x86_64/ )
+  # $2 : temp dir
+  local repo_url=$1
+  local temp_dir=$2
+  local bdd_file_name="core.db.tar.gz"
+  debug "fetch_repo_file_list ${repo_url}"
+  debug "temp dir: ${temp_dir}"
   
+  pushd ${temp_dir}
+  wget --no-verbose --no-check-certificate ${repo_url}/${bdd_file_name}
+  tar xzf ${bdd_file_name}
+  rm ${bdd_file_name}
+  popd
+}
+
+fetch_packages_list() {
+  local REPO=$1
+  local dl_temp_dir=`mktemp -d`
+  debug $REPO
   debug "fetch packages list: $REPO/"
+
+#  fetch_repo_file_list ${REPO} ${dl_temp_dir}
+ 
   fetch "$REPO/" | extract_href | awk -F"/" '{print $NF}' | sort -rn ||
     { debug "Error: cannot fetch packages list: $REPO"; return 1; }
+
+  rm -rf ${dl_temp_dir} || debug "temp dir already cleaned!"
+  debug "temp dir cleaned"
 }
 
 install_pacman_packages() {
@@ -136,67 +158,98 @@ install_pacman_packages() {
   done
 }
 
-configure_static_qemu() {
-  local ARCH=$1 DEST=$2
-  [[ "$ARCH" == arm* ]] && ARCH=arm
-  QEMU_STATIC_BIN=$(which qemu-$ARCH-static || echo )
-  [[ -e "$QEMU_STATIC_BIN" ]] ||\
-    { debug "no static qemu for $ARCH, ignoring"; return 0; }
-  cp "$QEMU_STATIC_BIN" "$DEST/usr/bin"
-}
-
 install_packages() {
   local ARCH=$1 DEST=$2 PACKAGES=$3
   debug "install packages: $PACKAGES"
-  LC_ALL=C chroot "$DEST" /usr/bin/pacman \
+  sudo LC_ALL=C chroot "$DEST" /usr/bin/pacman \
     --noconfirm --arch $ARCH -Sy --force $PACKAGES
 }
 
+fix_perm(){
+  # $1: dest dir
+  local DIR=$1
+  debug "Fix permission"
+
+  sudo chmod 1777 ${DIR}/tmp/
+  sudo chmod 775  ${DIR}/var/games/
+  sudo chmod 1777 ${DIR}/var/tmp/
+  sudo chmod 1777 ${DIR}/var/spool/mail/
+}
+
 show_usage() {
-  stderr "Usage: $(basename "$0") [-q] [-a i686|x86_64|arm] [-r REPO_URL] [-d DOWNLOAD_DIR] DESTDIR"
+  stderr "Usage: $(basename "$0") [-q] [-a i686|x86_64] [-r REPO_URL] [-d DOWNLOAD_DIR] DESTDIR"
 }
 
 main() {
+  debug "LIO 00"
   # Process arguments and options
   test $# -eq 0 && set -- "-h"
   local ARCH=
   local REPO_URL=
-  local USE_QEMU=
   local DOWNLOAD_DIR=
   
-  while getopts "qa:r:d:h" ARG; do
+  while getopts "a:r:d:h" ARG; do
     case "$ARG" in
       a) ARCH=$OPTARG;;
       r) REPO_URL=$OPTARG;;
-      q) USE_QEMU=true;;
       d) DOWNLOAD_DIR=$OPTARG;;
       *) show_usage; return 1;;
     esac
   done
   shift $(($OPTIND-1))
   test $# -eq 1 || { show_usage; return 1; }
+
+  debug "Lio 01"
   
   [[ -z "$ARCH" ]] && ARCH=$(uname -m)
-  [[ -z "$REPO_URL" ]] &&REPO_URL=$(get_default_repo "$ARCH")
+  [[ -z "$REPO_URL" ]] && REPO_URL=$(get_default_repo "$ARCH")
+
+  debug "Lio 02"
+  
   
   local DEST=$1
   local REPO=$(get_core_repo_url "$REPO_URL" "$ARCH")
+  debug "REPO: " $REPO
   [[ -z "$DOWNLOAD_DIR" ]] && DOWNLOAD_DIR=$(mktemp -d)
   mkdir -p "$DOWNLOAD_DIR"
   [[ "$DOWNLOAD_DIR" ]] && trap "rm -rf '$DOWNLOAD_DIR'" KILL TERM EXIT
+
+  debug "Lio 03"
+  
   debug "destination directory: $DEST"
   debug "core repository: $REPO"
   debug "temporary directory: $DOWNLOAD_DIR"
   
   # Fetch packages, install system and do a minimal configuration
   mkdir -p "$DEST"
-  local LIST=$(fetch_packages_list $REPO)
-  install_pacman_packages "${BASIC_PACKAGES[*]}" "$DEST" "$LIST" "$DOWNLOAD_DIR"
+  LIST=$(fetch_packages_list $REPO)
+
+  debug install_pacman_packages "${CORE_PACKAGES[*]}" "$DEST" "$LIST" "$DOWNLOAD_DIR"
+
+  debug "Lio 04"
+  
+  install_pacman_packages "${CORE_PACKAGES[*]}" "$DEST" "$LIST" "$DOWNLOAD_DIR"
+
+  debug "Lio 05"
+  
   configure_pacman "$DEST" "$ARCH"
+
+  debug "Lio 06"
+  
   configure_minimal_system "$DEST"
-  [[ -n "$USE_QEMU" ]] && configure_static_qemu "$ARCH" "$DEST"
-  install_packages "$ARCH" "$DEST" "${BASIC_PACKAGES[*]} ${EXTRA_PACKAGES[*]}"
+
+  fix_perm "$DEST"
+
+  debug "Lio 07"
+  
+  install_packages "$ARCH" "$DEST" "${BASIC_PACKAGES[*]}"
+
+  debug "Lio 08"
+  
   configure_pacman "$DEST" "$ARCH" # Pacman must be re-configured
+
+  debug "Lio 09"
+  
   [[ "$DOWNLOAD_DIR" ]] && rm -rf "$DOWNLOAD_DIR"
   
   debug "done"
