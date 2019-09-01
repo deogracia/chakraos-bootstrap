@@ -23,12 +23,12 @@ set -e -u -o pipefail
 # Packages needed by pacman (see get-pacman-dependencies.sh)
 CORE_PACKAGES=(
   acl attr bash bzip2 chakra-signatures coreutils curl e2fsprogs expat file filesystem gcc-libs 
-  glibc gawk gpgme gpm grep icu krb5 keyutils libarchive libassuan libcap libgpg-error libidn libssh2 
-  linux-api-headers lz4 lzo2 ncurses nettle openssl pacman pacman-mirrorlist readline 
+  glibc gawk gpgme gpm grep iana-etc icu krb5 keyutils libarchive libassuan libcap libgpg-error
+  libidn libssh2 linux-api-headers lz4 lzo2 ncurses nettle openssl pacman pacman-mirrorlist readline 
   sed systemd tar tzdata xz zlib
 )
-BASIC_PACKAGES=( 
-  vim
+BASIC_PACKAGES=(
+  curl e2fsprogs gnutls less man pam perl pkg-config shadow tar util-linux vim wget
 )
 
 DEFAULT_REPO_URL="https://rsync.chakralinux.org/packages"
@@ -59,7 +59,27 @@ uncompress() {
     *) debug "Error: unknown package format: $FILEPATH"
        return 1;;
   esac
-}  
+}
+
+create_raw_file(){
+  # $1: DEST
+  local DEST=$1
+  local LOOP=`losetup -f`
+  local IMG_NAME="hd01.img"
+  local IMG_SIZE="10G"
+
+  debug "create_raw_file : Start!"
+  pushd ${DEST}
+  fallocate -l ${IMG_SIZE} ${IMG_NAME}
+  sudo losetup ${LOOP} ${IMG_NAME}
+
+  sudo sgdisk --load-backup=../disk.part ${LOOP}
+  sudo sgdisk --randomize-guids         ${LOOP}
+
+  popd  
+  debug "create_raw_file : End!"
+  echo ${LOOP}
+}
 
 ###
 get_default_repo() {
@@ -88,8 +108,8 @@ configure_pacman() {
   local DEST=$1 ARCH=$2
   debug "configure DNS and pacman"
   sudo cp "/etc/resolv.conf" "$DEST/etc/resolv.conf"
-  SERVER=$(get_template_repo_url "$REPO_URL" '$repo'  "$ARCH")
-  echo "Server = $SERVER" >> "$DEST/etc/pacman.d/mirrorlist"
+  #SERVER=$(get_template_repo_url "$REPO_URL" '$repo'  "$ARCH")
+  #sudo echo "Server = $SERVER" >> "$DEST/etc/pacman.d/mirrorlist"
 }
 
 configure_minimal_system() {
@@ -158,11 +178,22 @@ install_pacman_packages() {
   done
 }
 
+fix_pacman_db(){
+  # $1: list of CORE_PACKAGES
+  # $2: DEST
+
+  local PACKAGES=$1 DEST=$2
+  debug "fix pacman db"
+  sudo LC_ALL=C chroot "$DEST" /usr/bin/pacman \
+    -Sy --noconfirm --force ${PACKAGES}
+}
+
 install_packages() {
   local ARCH=$1 DEST=$2 PACKAGES=$3
   debug "install packages: $PACKAGES"
   sudo LC_ALL=C chroot "$DEST" /usr/bin/pacman \
     --noconfirm --arch $ARCH -Sy --force $PACKAGES
+  sudo LC_ALL=C chroot "${DEST}" "/usr/bin/mandb --quiet"
 }
 
 fix_perm(){
@@ -174,6 +205,7 @@ fix_perm(){
   sudo chmod 775  ${DIR}/var/games/
   sudo chmod 1777 ${DIR}/var/tmp/
   sudo chmod 1777 ${DIR}/var/spool/mail/
+  sudo chmod 2755 ${DIR}/var/log/journal/
 }
 
 show_usage() {
@@ -241,8 +273,12 @@ main() {
   fix_perm "$DEST"
 
   debug "Lio 07"
+
+  fix_pacman_db "${CORE_PACKAGES[*]} ${BASIC_PACKAGES[*]}" "$DEST"
   
-  install_packages "$ARCH" "$DEST" "${BASIC_PACKAGES[*]}"
+#  configure_pacman "$DEST" "$ARCH" # Pacman must be re-configured
+#  
+#  install_packages "$ARCH" "$DEST" "${BASIC_PACKAGES[*]}"
 
   debug "Lio 08"
   
